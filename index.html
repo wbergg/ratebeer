@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>ratebeer</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍺</text></svg>" />
+    <link rel="stylesheet" href="/src/client/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">rate<span>beer</span></a>
+      <select id="tasting-select" hidden aria-label="Tasting"></select>
+      <div class="spacer"></div>
+      <div id="auth-area" class="auth-area"></div>
+    </header>
+    <div id="banner" class="banner" hidden></div>
+    <main class="page">
+      <h1 id="tasting-title" class="tasting-title"></h1>
+      <div id="empty" class="empty" hidden></div>
+      <section id="matrix-wrap" class="matrix-wrap" hidden>
+        <table id="matrix" class="matrix"></table>
+      </section>
+      <section id="lower" class="lower" hidden>
+        <div class="panel">
+          <h2>Event log</h2>
+          <ol id="log" class="log"></ol>
+          <button id="log-more" class="btn ghost" hidden>Load more</button>
+        </div>
+        <div class="side">
+          <div class="panel">
+            <h2>Leaderboard</h2>
+            <ol id="board" class="board"></ol>
+          </div>
+          <div class="panel">
+            <h2>Consumed</h2>
+            <ol id="consumed" class="board"></ol>
+          </div>
+        </div>
+      </section>
+    </main>
+    <div id="popup-backdrop" class="popup-backdrop" hidden></div>
+    <div id="popup" class="popup" role="dialog" aria-modal="true" hidden></div>
+    <div id="live" class="live-dot" title="Live"></div>
+    <script type="module" src="/src/client/main.ts"></script>
+  </body>
+</html>

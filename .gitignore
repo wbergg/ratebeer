@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build output (vite + @cloudflare/vite-plugin)
+dist/
+*.tsbuildinfo
+
+# Wrangler / Miniflare local state (local D1, Durable Objects) and temp files
+.wrangler/
+.mf/
+
+# Secrets — never commit (template .dev.vars.example is kept)
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+logs/
+
+# Tests / tooling output
+coverage/
+test-results/
+playwright-report/
+
+# Editors & OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

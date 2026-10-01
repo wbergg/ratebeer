@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>ratebeer · admin</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍺</text></svg>" />
+    <link rel="stylesheet" href="/src/client/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/">rate<span>beer</span></a>
+      <span class="tag">admin</span>
+      <div class="spacer"></div>
+      <a class="btn ghost" href="/">Back to matrix</a>
+    </header>
+    <main class="page admin">
+      <nav class="tabs" id="tabs">
+        <button data-tab="tastings" class="active">Tastings</button>
+        <button data-tab="beers">Beers</button>
+        <button data-tab="roster">Participants</button>
+        <button data-tab="users">Users</button>
+      </nav>
+      <div id="toast" class="toast" hidden></div>
+      <section id="view"></section>
+    </main>
+    <script type="module" src="/src/client/admin.ts"></script>
+  </body>
+</html>

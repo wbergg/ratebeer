@@ -1,6 +1,4 @@
-import type { Beer, Participant, Rating, RatingEvent, Tasting } from "../shared/types";
-
-export const EVENT_PAGE = 50;
+import { EVENT_PAGE, type Beer, type Participant, type Rating, type RatingEvent, type Tasting } from "../shared/types";
 
 const BEER_COLS = "id, tasting_id, name, size_ml, abv, image_url, position, hidden_at";
 const EVENT_COLS =

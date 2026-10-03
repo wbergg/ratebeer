@@ -9,6 +9,10 @@ export const admin = new Hono<AppEnv>();
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ROLES: Role[] = ["user", "admin"];
+// Numeric path ids only; anything else falls through to the JSON 404.
+const ID = "{[0-9]{1,9}}";
+
+const isId = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0;
 
 const room = (env: Env, tastingId: number) => env.ROOM.get(env.ROOM.idFromName(String(tastingId)));
 const broadcast = (env: Env, tastingId: number, msg: ServerMessage) => room(env, tastingId).broadcast(msg);
@@ -38,8 +42,9 @@ function parseBeer(b: Record<string, unknown>) {
 admin.post("/impersonate", async (c) => {
   const v = c.get("viewer");
   if (v.realUser?.role !== "admin" || !v.tokenHash) return c.json({ error: "Forbidden" }, 403);
-  const { userId } = await c.req.json<{ userId: number | null }>();
-  const target = userId === null || userId === v.realUser.id ? null : Number(userId);
+  const { userId } = await c.req.json<{ userId: unknown }>();
+  if (userId !== null && !isId(userId)) return c.json({ error: "Bad user id" }, 400);
+  const target = userId === null || userId === v.realUser.id ? null : userId;
   if (target !== null) {
     const exists = await c.env.DB.prepare("SELECT 1 FROM users WHERE id = ?").bind(target).first();
     if (!exists) return c.json({ error: "Unknown user" }, 404);
@@ -79,7 +84,7 @@ admin.post("/users", async (c) => {
   }
 });
 
-admin.patch("/users/:id", async (c) => {
+admin.patch(`/users/:id${ID}`, async (c) => {
   const id = Number(c.req.param("id"));
   const b = await c.req.json<Record<string, unknown>>();
   const email = str(b.email).toLowerCase();
@@ -103,7 +108,7 @@ admin.patch("/users/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-admin.delete("/users/:id", async (c) => {
+admin.delete(`/users/:id${ID}`, async (c) => {
   const id = Number(c.req.param("id"));
   if (id === c.get("viewer").realUser!.id) return c.json({ error: "You cannot delete yourself" }, 400);
   const used = await c.env.DB.prepare("SELECT 1 FROM ratings WHERE user_id = ? UNION SELECT 1 FROM events WHERE user_id = ? LIMIT 1")
@@ -136,7 +141,7 @@ admin.post("/tastings", async (c) => {
   }
 });
 
-admin.patch("/tastings/:id", async (c) => {
+admin.patch(`/tastings/:id${ID}`, async (c) => {
   const id = Number(c.req.param("id"));
   const b = await c.req.json<Record<string, unknown>>();
   const name = str(b.name, 100);
@@ -147,7 +152,7 @@ admin.patch("/tastings/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-admin.post("/tastings/:id/activate", async (c) => {
+admin.post(`/tastings/:id${ID}/activate`, async (c) => {
   const id = Number(c.req.param("id"));
   const { active } = await c.req.json<{ active: boolean }>();
   const prev = await c.env.DB.prepare("SELECT id FROM tastings WHERE is_active = 1").first<{ id: number }>();
@@ -167,7 +172,7 @@ admin.post("/tastings/:id/activate", async (c) => {
   return c.json({ ok: true });
 });
 
-admin.delete("/tastings/:id", async (c) => {
+admin.delete(`/tastings/:id${ID}`, async (c) => {
   const id = Number(c.req.param("id"));
   const t = await getTastingById(c.env.DB, id);
   if (!t) return c.json({ error: "Not found" }, 404);
@@ -177,25 +182,26 @@ admin.delete("/tastings/:id", async (c) => {
 
 // ---- participants ----
 
-admin.get("/tastings/:id/participants", async (c) =>
+admin.get(`/tastings/:id${ID}/participants`, async (c) =>
   c.json(await listParticipants(c.env.DB, Number(c.req.param("id")), true)),
 );
 
-admin.post("/tastings/:id/participants", async (c) => {
+admin.post(`/tastings/:id${ID}/participants`, async (c) => {
   const tastingId = Number(c.req.param("id"));
-  const { userId } = await c.req.json<{ userId: number }>();
+  const { userId } = await c.req.json<{ userId: unknown }>();
+  if (!isId(userId)) return c.json({ error: "Bad user id" }, 400);
   await c.env.DB.prepare(
     `INSERT INTO tasting_participants (tasting_id, user_id, position)
      VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM tasting_participants WHERE tasting_id = ?1))
      ON CONFLICT (tasting_id, user_id) DO UPDATE SET hidden_at = NULL`,
   )
-    .bind(tastingId, Number(userId))
+    .bind(tastingId, userId)
     .run();
   await pushParticipants(c.env, tastingId);
   return c.json({ ok: true });
 });
 
-admin.patch("/tastings/:id/participants/:userId", async (c) => {
+admin.patch(`/tastings/:id${ID}/participants/:userId${ID}`, async (c) => {
   const tastingId = Number(c.req.param("id"));
   const { hidden } = await c.req.json<{ hidden: boolean }>();
   await c.env.DB.prepare("UPDATE tasting_participants SET hidden_at = ? WHERE tasting_id = ? AND user_id = ?")
@@ -205,16 +211,16 @@ admin.patch("/tastings/:id/participants/:userId", async (c) => {
   return c.json({ ok: true });
 });
 
-admin.put("/tastings/:id/participants/order", async (c) => {
+admin.put(`/tastings/:id${ID}/participants/order`, async (c) => {
   const tastingId = Number(c.req.param("id"));
-  const { ids } = await c.req.json<{ ids: number[] }>();
-  if (!Array.isArray(ids) || ids.length === 0) return c.json({ error: "ids required" }, 400);
+  const { ids } = await c.req.json<{ ids: unknown }>();
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every(isId)) return c.json({ error: "ids required" }, 400);
   await c.env.DB.batch(
     ids.map((uid, i) =>
       c.env.DB.prepare("UPDATE tasting_participants SET position = ? WHERE tasting_id = ? AND user_id = ?").bind(
         i,
         tastingId,
-        Number(uid),
+        uid,
       ),
     ),
   );
@@ -224,9 +230,9 @@ admin.put("/tastings/:id/participants/order", async (c) => {
 
 // ---- beers ----
 
-admin.get("/tastings/:id/beers", async (c) => c.json(await listBeers(c.env.DB, Number(c.req.param("id")), true)));
+admin.get(`/tastings/:id${ID}/beers`, async (c) => c.json(await listBeers(c.env.DB, Number(c.req.param("id")), true)));
 
-admin.post("/tastings/:id/beers", async (c) => {
+admin.post(`/tastings/:id${ID}/beers`, async (c) => {
   const tastingId = Number(c.req.param("id"));
   const beer = parseBeer(await c.req.json());
   if ("error" in beer) return c.json(beer, 400);
@@ -240,7 +246,7 @@ admin.post("/tastings/:id/beers", async (c) => {
   return c.json({ ok: true }, 201);
 });
 
-admin.patch("/tastings/:id/beers/:beerId", async (c) => {
+admin.patch(`/tastings/:id${ID}/beers/:beerId${ID}`, async (c) => {
   const tastingId = Number(c.req.param("id"));
   const beerId = Number(c.req.param("beerId"));
   const b = await c.req.json<Record<string, unknown>>();
@@ -261,13 +267,13 @@ admin.patch("/tastings/:id/beers/:beerId", async (c) => {
   return c.json({ ok: true });
 });
 
-admin.put("/tastings/:id/beers/order", async (c) => {
+admin.put(`/tastings/:id${ID}/beers/order`, async (c) => {
   const tastingId = Number(c.req.param("id"));
-  const { ids } = await c.req.json<{ ids: number[] }>();
-  if (!Array.isArray(ids) || ids.length === 0) return c.json({ error: "ids required" }, 400);
+  const { ids } = await c.req.json<{ ids: unknown }>();
+  if (!Array.isArray(ids) || ids.length === 0 || !ids.every(isId)) return c.json({ error: "ids required" }, 400);
   await c.env.DB.batch(
     ids.map((bid, i) =>
-      c.env.DB.prepare("UPDATE beers SET position = ? WHERE id = ? AND tasting_id = ?").bind(i, Number(bid), tastingId),
+      c.env.DB.prepare("UPDATE beers SET position = ? WHERE id = ? AND tasting_id = ?").bind(i, bid, tastingId),
     ),
   );
   await pushBeers(c.env, tastingId);
@@ -276,7 +282,7 @@ admin.put("/tastings/:id/beers/order", async (c) => {
 
 // ---- events ----
 
-admin.delete("/events/:id", async (c) => {
+admin.delete(`/events/:id${ID}`, async (c) => {
   const id = Number(c.req.param("id"));
   const ev = await c.env.DB.prepare("DELETE FROM events WHERE id = ? RETURNING tasting_id")
     .bind(id)
@@ -287,7 +293,7 @@ admin.delete("/events/:id", async (c) => {
 });
 
 // Force remove: clears the rating this event belongs to and all log lines for that cell.
-admin.post("/events/:id/force", async (c) => {
+admin.post(`/events/:id${ID}/force`, async (c) => {
   const ev = await c.env.DB.prepare("SELECT tasting_id, beer_id, user_id FROM events WHERE id = ?")
     .bind(Number(c.req.param("id")))
     .first<{ tasting_id: number; beer_id: number; user_id: number }>();
@@ -302,7 +308,7 @@ admin.post("/events/:id/force", async (c) => {
 
 // ---- permanent deletion of soft-removed beers / participants ----
 
-admin.delete("/tastings/:id/beers/:beerId", async (c) => {
+admin.delete(`/tastings/:id${ID}/beers/:beerId${ID}`, async (c) => {
   const tastingId = Number(c.req.param("id"));
   const beerId = Number(c.req.param("beerId"));
   const beer = await c.env.DB.prepare("SELECT hidden_at FROM beers WHERE id = ? AND tasting_id = ?")
@@ -314,7 +320,7 @@ admin.delete("/tastings/:id/beers/:beerId", async (c) => {
   return c.json({ ok: true, removedEvents: removed.length });
 });
 
-admin.delete("/tastings/:id/participants/:userId", async (c) => {
+admin.delete(`/tastings/:id${ID}/participants/:userId${ID}`, async (c) => {
   const tastingId = Number(c.req.param("id"));
   const userId = Number(c.req.param("userId"));
   const part = await c.env.DB.prepare("SELECT hidden_at FROM tasting_participants WHERE user_id = ? AND tasting_id = ?")

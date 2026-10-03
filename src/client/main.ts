@@ -1,6 +1,6 @@
 import { canEditColumn, isAdmin, isRegistered } from "../shared/authz";
 import { average, consumedBoard, leaderboard } from "../shared/logic";
-import type { Beer, Me, Participant, Rating, RatingEvent, ServerMessage, Snapshot, Tasting } from "../shared/types";
+import { EVENT_PAGE, type Beer, type Me, type Participant, type Rating, type RatingEvent, type ServerMessage, type Snapshot, type Tasting } from "../shared/types";
 import { api, ApiError, esc, formatBeerMeta, formatTime } from "./api";
 import { connectLive } from "./ws";
 
@@ -421,15 +421,23 @@ $("log").addEventListener("click", async (e) => {
   }
 });
 
-$("log-more").onclick = async () => {
+const logMore = $<HTMLButtonElement>("log-more");
+logMore.onclick = async () => {
   const last = state.events[state.events.length - 1];
-  if (!last) return;
-  const older = await api<RatingEvent[]>(
-    `/api/tastings/${encodeURIComponent(state.tasting!.slug)}/events?before=${last.id}`,
-  );
-  state.events.push(...older);
-  state.moreEvents = older.length === 50;
-  renderLog();
+  if (!last || logMore.disabled) return;
+  logMore.disabled = true;
+  try {
+    const older = await api<RatingEvent[]>(
+      `/api/tastings/${encodeURIComponent(state.tasting!.slug)}/events?before=${last.id}`,
+    );
+    // A snapshot reload may have replaced the list meanwhile; never show a line twice.
+    const seen = new Set(state.events.map((e) => e.id));
+    state.events.push(...older.filter((e) => !seen.has(e.id)));
+    state.moreEvents = older.length === EVENT_PAGE;
+    renderLog();
+  } finally {
+    logMore.disabled = false;
+  }
 };
 
 // ---------- live updates ----------
@@ -488,6 +496,10 @@ function applyMessage(m: ServerMessage) {
     case "tasting": {
       const activeChanged = state.tasting?.is_active !== m.tasting.is_active;
       state.tasting = m.tasting;
+      // Keep the header's tasting picker in sync: at most one tasting is active.
+      state.tastings = state.tastings.map((t) =>
+        t.id === m.tasting.id ? m.tasting : m.tasting.is_active ? { ...t, is_active: 0 } : t,
+      );
       if (activeChanged) void loadSnapshot().catch(() => location.reload());
       else renderAll();
       break;
@@ -502,7 +514,7 @@ async function loadSnapshot() {
   state.participants = snap.participants;
   state.ratings = new Map(snap.ratings.map((r) => [key(r.beer_id, r.user_id), r]));
   state.events = snap.events;
-  state.moreEvents = snap.events.length === 50;
+  state.moreEvents = snap.events.length === EVENT_PAGE;
   state.ready = true;
   renderAll();
   const buffered = state.buffer.splice(0);

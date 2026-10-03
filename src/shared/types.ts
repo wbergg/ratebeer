@@ -1,5 +1,8 @@
 export type Role = "user" | "admin";
 
+/** Event log page size (initial snapshot and each "Load more"). */
+export const EVENT_PAGE = 50;
+
 export interface User {
   id: number;
   email: string;

@@ -154,7 +154,9 @@ admin.patch(`/tastings/:id${ID}`, async (c) => {
 
 admin.post(`/tastings/:id${ID}/activate`, async (c) => {
   const id = Number(c.req.param("id"));
-  const { active } = await c.req.json<{ active: boolean }>();
+  const { active } = await c.req.json<{ active: unknown }>();
+  if (typeof active !== "boolean") return c.json({ error: "active must be true or false" }, 400);
+  if (!(await getTastingById(c.env.DB, id))) return c.json({ error: "Not found" }, 404);
   const prev = await c.env.DB.prepare("SELECT id FROM tastings WHERE is_active = 1").first<{ id: number }>();
   if (active) {
     await c.env.DB.batch([
@@ -190,6 +192,12 @@ admin.post(`/tastings/:id${ID}/participants`, async (c) => {
   const tastingId = Number(c.req.param("id"));
   const { userId } = await c.req.json<{ userId: unknown }>();
   if (!isId(userId)) return c.json({ error: "Bad user id" }, 400);
+  const [tasting, user] = await Promise.all([
+    getTastingById(c.env.DB, tastingId),
+    c.env.DB.prepare("SELECT 1 FROM users WHERE id = ?").bind(userId).first(),
+  ]);
+  if (!tasting) return c.json({ error: "Not found" }, 404);
+  if (!user) return c.json({ error: "Unknown user" }, 404);
   await c.env.DB.prepare(
     `INSERT INTO tasting_participants (tasting_id, user_id, position)
      VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM tasting_participants WHERE tasting_id = ?1))
@@ -236,6 +244,7 @@ admin.post(`/tastings/:id${ID}/beers`, async (c) => {
   const tastingId = Number(c.req.param("id"));
   const beer = parseBeer(await c.req.json());
   if ("error" in beer) return c.json(beer, 400);
+  if (!(await getTastingById(c.env.DB, tastingId))) return c.json({ error: "Not found" }, 404);
   await c.env.DB.prepare(
     `INSERT INTO beers (tasting_id, name, size_ml, abv, image_url, position)
      VALUES (?1, ?2, ?3, ?4, ?5, (SELECT COALESCE(MAX(position), -1) + 1 FROM beers WHERE tasting_id = ?1))`,

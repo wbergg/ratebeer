@@ -14,6 +14,9 @@ import type { AppEnv } from "../env";
 
 export const api = new Hono<AppEnv>();
 
+// Real JSON numbers only: no "7" strings or `true` coerced to 1.
+const isInt = (v: unknown): v is number => Number.isInteger(v);
+
 api.get("/me", (c) => {
   const v = c.get("viewer");
   const me: Me = { email: v.email, realUser: v.realUser, user: v.user, impersonating: v.impersonating };
@@ -54,12 +57,10 @@ api.post("/tastings/:slug/ratings", async (c) => {
   if (!tasting || !canViewTasting(v, tasting)) return c.json({ error: "Not found" }, 404);
 
   const body = await c.req.json<{ beerId: unknown; userId: unknown; score: unknown; comment?: unknown }>();
-  const beerId = Number(body.beerId);
-  const userId = Number(body.userId);
-  const score = body.score === null ? null : Number(body.score);
+  const { beerId, userId, score } = body;
   const comment = typeof body.comment === "string" ? body.comment.slice(0, 500) : null;
-  if (!Number.isInteger(beerId) || !Number.isInteger(userId)) return c.json({ error: "Bad request" }, 400);
-  if (score !== null && (!Number.isInteger(score) || score < 1 || score > 10)) {
+  if (!isInt(beerId) || !isInt(userId)) return c.json({ error: "Bad request" }, 400);
+  if (score !== null && (!isInt(score) || score < 1 || score > 10)) {
     return c.json({ error: "Score must be 1-10" }, 400);
   }
 

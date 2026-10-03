@@ -175,16 +175,7 @@ function showImagePreview(img: HTMLImageElement) {
   tip.style.left = `${rect.right + 12}px`;
   tip.style.top = `${Math.max(8, Math.min(rect.top + rect.height / 2 - h / 2, window.innerHeight - h - 8))}px`;
 }
-$("matrix").addEventListener("pointerover", (e) => {
-  const target = e.target as HTMLElement;
-  hideTip();
-  // Mouse only: on touch, a tap would just flash the preview.
-  if (e.pointerType === "mouse" && target instanceof HTMLImageElement && target.closest(".beer-cell")) {
-    showImagePreview(target);
-    return;
-  }
-  const td = target.closest<HTMLTableCellElement>("td.cell");
-  if (!td) return;
+function showCommentTip(td: HTMLTableCellElement) {
   const r = state.ratings.get(key(Number(td.dataset.beer), Number(td.dataset.user)));
   if (!r?.comment) return;
   tip = document.createElement("div");
@@ -194,21 +185,33 @@ $("matrix").addEventListener("pointerover", (e) => {
   const rect = td.getBoundingClientRect();
   tip.style.left = `${Math.min(rect.left, window.innerWidth - tip.offsetWidth - 8)}px`;
   tip.style.top = `${rect.bottom + 6}px`;
+}
+$("matrix").addEventListener("pointerover", (e) => {
+  const target = e.target as HTMLElement;
+  hideTip();
+  // Mouse only: on touch, a tap would just flash the preview.
+  if (e.pointerType === "mouse" && target instanceof HTMLImageElement && target.closest(".beer-cell")) {
+    showImagePreview(target);
+    return;
+  }
+  const td = target.closest<HTMLTableCellElement>("td.cell");
+  if (td) showCommentTip(td);
 });
-$("matrix").addEventListener("mouseleave", hideTip);
+// Touch fires pointerleave (and a compat mouseleave) right after the tap, so only a real
+// mouse leaving hides the tip; on touch it stays until a tap elsewhere or a scroll.
+$("matrix").addEventListener("pointerleave", (e) => e.pointerType === "mouse" && hideTip());
+document.addEventListener("pointerdown", (e) => !$("matrix").contains(e.target as Node) && hideTip());
 $("matrix-wrap").addEventListener("scroll", hideTip, { passive: true });
+window.addEventListener("scroll", hideTip, { passive: true });
 $("matrix").addEventListener("click", (e) => {
   const td = (e.target as HTMLElement).closest<HTMLTableCellElement>("td.cell");
   if (!td) return;
   const beerId = Number(td.dataset.beer);
   const userId = Number(td.dataset.user);
   hideTip();
+  // Touch devices have no hover: show the comment on tap instead.
   if (canEdit(userId)) openPopup(td, beerId, userId);
-  else {
-    // Touch devices have no hover: show the comment on tap instead.
-    const r = state.ratings.get(key(beerId, userId));
-    if (r?.comment) td.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-  }
+  else showCommentTip(td);
 });
 
 // ---------- popup ----------
@@ -454,7 +457,6 @@ function applyMessage(m: ServerMessage) {
       renderLog(m.event.id);
       renderBoard();
       renderConsumed();
-  renderConsumed();
       break;
     }
     case "beers":
@@ -462,14 +464,12 @@ function applyMessage(m: ServerMessage) {
       renderMatrix();
       renderBoard();
       renderConsumed();
-  renderConsumed();
       break;
     case "participants":
       state.participants = m.participants;
       renderMatrix();
       renderBoard();
       renderConsumed();
-  renderConsumed();
       break;
     case "purged": {
       const gone = new Set(m.eventIds);
@@ -483,7 +483,6 @@ function applyMessage(m: ServerMessage) {
       renderLog();
       renderBoard();
       renderConsumed();
-  renderConsumed();
       break;
     }
     case "tastingDeleted":
@@ -500,15 +499,20 @@ function applyMessage(m: ServerMessage) {
       state.tastings = state.tastings.map((t) =>
         t.id === m.tasting.id ? m.tasting : m.tasting.is_active ? { ...t, is_active: 0 } : t,
       );
-      if (activeChanged) void loadSnapshot().catch(() => location.reload());
+      if (activeChanged) resync();
       else renderAll();
       break;
     }
   }
 }
 
-async function loadSnapshot() {
+// Bumped on every snapshot load so a slow, superseded load never overwrites a newer one.
+let syncGen = 0;
+let syncRetry: number | undefined;
+
+async function loadSnapshot(gen = ++syncGen) {
   const snap = await api<Snapshot>(`/api/tastings/${encodeURIComponent(state.tasting!.slug)}/snapshot`);
+  if (gen !== syncGen) return;
   state.tasting = snap.tasting;
   state.beers = snap.beers;
   state.participants = snap.participants;
@@ -519,6 +523,21 @@ async function loadSnapshot() {
   renderAll();
   const buffered = state.buffer.splice(0);
   buffered.forEach(applyMessage);
+}
+
+/**
+ * Reload the snapshot, buffering live messages until it lands. A 404 means we may no longer
+ * see this tasting (closed, deleted), so reload the page; other failures retry.
+ */
+function resync() {
+  const gen = ++syncGen;
+  window.clearTimeout(syncRetry);
+  state.ready = false;
+  loadSnapshot(gen).catch((e) => {
+    if (gen !== syncGen) return;
+    if (e instanceof ApiError && e.status === 404) location.reload();
+    else syncRetry = window.setTimeout(resync, 3000);
+  });
 }
 
 // ---------- boot ----------
@@ -538,10 +557,7 @@ async function boot() {
   connectLive(tasting.slug, {
     onMessage: (m) => (state.ready ? applyMessage(m) : state.buffer.push(m)),
     onOpen: (reconnected) => {
-      if (reconnected) {
-        state.ready = false;
-        void loadSnapshot();
-      }
+      if (reconnected) resync();
     },
     onStatus: (up) => $("live").classList.toggle("on", up),
   });

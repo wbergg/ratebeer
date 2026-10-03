@@ -154,15 +154,36 @@ function showEmpty(msg: string) {
   el.textContent = msg;
 }
 
-// Tooltip for comments + click to edit (delegated).
+// Tooltip for comments, enlarged beer image on hover, click to edit (delegated).
 let tip: HTMLDivElement | null = null;
 function hideTip() {
   tip?.remove();
   tip = null;
 }
-$("matrix").addEventListener("mouseover", (e) => {
-  const td = (e.target as HTMLElement).closest<HTMLTableCellElement>("td.cell");
+function showImagePreview(img: HTMLImageElement) {
+  tip = document.createElement("div");
+  tip.className = "img-preview";
+  const big = document.createElement("img");
+  big.src = img.src;
+  big.alt = "";
+  big.referrerPolicy = "no-referrer";
+  tip.append(big);
+  document.body.append(tip);
+  const rect = img.getBoundingClientRect();
+  const h = tip.offsetHeight;
+  // Right of the thumbnail, vertically centred on it, kept inside the viewport.
+  tip.style.left = `${rect.right + 12}px`;
+  tip.style.top = `${Math.max(8, Math.min(rect.top + rect.height / 2 - h / 2, window.innerHeight - h - 8))}px`;
+}
+$("matrix").addEventListener("pointerover", (e) => {
+  const target = e.target as HTMLElement;
   hideTip();
+  // Mouse only: on touch, a tap would just flash the preview.
+  if (e.pointerType === "mouse" && target instanceof HTMLImageElement && target.closest(".beer-cell")) {
+    showImagePreview(target);
+    return;
+  }
+  const td = target.closest<HTMLTableCellElement>("td.cell");
   if (!td) return;
   const r = state.ratings.get(key(Number(td.dataset.beer), Number(td.dataset.user)));
   if (!r?.comment) return;
@@ -175,6 +196,7 @@ $("matrix").addEventListener("mouseover", (e) => {
   tip.style.top = `${rect.bottom + 6}px`;
 });
 $("matrix").addEventListener("mouseleave", hideTip);
+$("matrix-wrap").addEventListener("scroll", hideTip, { passive: true });
 $("matrix").addEventListener("click", (e) => {
   const td = (e.target as HTMLElement).closest<HTMLTableCellElement>("td.cell");
   if (!td) return;

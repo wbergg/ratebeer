@@ -132,6 +132,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   position: fixed; z-index: 40; max-width: 260px; padding: 8px 10px; border-radius: 8px;
   background: var(--text); color: var(--bg); font-size: 13px; pointer-events: none; box-shadow: var(--shadow);
 }
+.img-preview {
+  position: fixed; z-index: 40; padding: 10px; border-radius: var(--radius); pointer-events: none;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow);
+}
+.img-preview img { display: block; width: 160px; height: 320px; object-fit: contain; }
 
 /* ---- lower panels ---- */
 .lower { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 20px; margin-top: 24px; }

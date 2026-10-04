@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { decideRating } from "../shared/logic";
 import type { Rating, RatingEvent, ServerMessage } from "../shared/types";
-import { EVENT_COLS } from "./db";
+import { EVENT_COLS, getTastingById, listBeers, listParticipants } from "./db";
 import type { Env } from "./env";
 
 export interface RatingInput {
@@ -73,6 +73,8 @@ export class SessionRoom extends DurableObject<Env> {
    * - beerId + userId: one cell, as if it was never rated (force remove)
    * - beerId only + deleteBeer: a removed beer with all its ratings/events
    * - userId only + deleteParticipant: a removed participant's ratings/events in this tasting
+   * With deleteBeer / deleteParticipant, nothing is deleted unless that row is still soft-removed
+   * (it may have been restored meanwhile); then this returns null.
    */
   purge(input: {
     tastingId: number;
@@ -80,7 +82,7 @@ export class SessionRoom extends DurableObject<Env> {
     userId: number | null;
     deleteBeer?: boolean;
     deleteParticipant?: boolean;
-  }): Promise<number[]> {
+  }): Promise<number[] | null> {
     return this.enqueue(async () => {
       const db = this.env.DB;
       const conds = ["tasting_id = ?"];
@@ -94,31 +96,73 @@ export class SessionRoom extends DurableObject<Env> {
         args.push(input.userId);
       }
       if (conds.length === 1) throw new Error("purge needs beerId and/or userId");
+
+      // Restore isn't queued, so the "still removed" check is part of every statement in the
+      // batch (one transaction): either all of it happens or none of it does.
+      let owner: D1PreparedStatement | null = null;
+      if (input.deleteBeer && input.beerId !== null) {
+        conds.push("EXISTS (SELECT 1 FROM beers WHERE id = ? AND tasting_id = ? AND hidden_at IS NOT NULL)");
+        args.push(input.beerId, input.tastingId);
+        owner = db
+          .prepare("DELETE FROM beers WHERE id = ? AND tasting_id = ? AND hidden_at IS NOT NULL RETURNING id")
+          .bind(input.beerId, input.tastingId);
+      } else if (input.deleteParticipant && input.userId !== null) {
+        conds.push(
+          "EXISTS (SELECT 1 FROM tasting_participants WHERE user_id = ? AND tasting_id = ? AND hidden_at IS NOT NULL)",
+        );
+        args.push(input.userId, input.tastingId);
+        owner = db
+          .prepare(
+            "DELETE FROM tasting_participants WHERE user_id = ? AND tasting_id = ? AND hidden_at IS NOT NULL RETURNING user_id",
+          )
+          .bind(input.userId, input.tastingId);
+      }
       const where = conds.join(" AND ");
 
+      // The owner row goes last: the EXISTS guards above must still see it.
       const stmts = [
         db.prepare(`DELETE FROM events WHERE ${where} RETURNING id`).bind(...args),
         db.prepare(`DELETE FROM ratings WHERE ${where}`).bind(...args),
+        ...(owner ? [owner] : []),
       ];
-      // Only rows already soft-removed may be hard-deleted.
-      if (input.deleteBeer && input.beerId !== null) {
-        stmts.push(
-          db
-            .prepare("DELETE FROM beers WHERE id = ? AND tasting_id = ? AND hidden_at IS NOT NULL")
-            .bind(input.beerId, input.tastingId),
-        );
-      }
-      if (input.deleteParticipant && input.userId !== null) {
-        stmts.push(
-          db
-            .prepare("DELETE FROM tasting_participants WHERE user_id = ? AND tasting_id = ? AND hidden_at IS NOT NULL")
-            .bind(input.userId, input.tastingId),
-        );
-      }
-      const [deleted] = await db.batch(stmts);
-      const eventIds = (deleted!.results as { id: number }[]).map((r) => r.id);
+      const results = await db.batch(stmts);
+      if (owner && results[2]!.results.length === 0) return null;
+      const eventIds = (results[0]!.results as { id: number }[]).map((r) => r.id);
       await this.broadcast({ type: "purged", beerId: input.beerId, userId: input.userId, eventIds });
       return eventIds;
+    });
+  }
+
+  /** Delete one log line (not the rating). Returns false if it doesn't exist in this tasting. */
+  deleteEvent(tastingId: number, eventId: number): Promise<boolean> {
+    return this.enqueue(async () => {
+      const gone = await this.env.DB.prepare("DELETE FROM events WHERE id = ? AND tasting_id = ? RETURNING id")
+        .bind(eventId, tastingId)
+        .first();
+      if (!gone) return false;
+      await this.broadcast({ type: "eventRemoved", id: eventId });
+      return true;
+    });
+  }
+
+  // Admin list updates: read + broadcast run in the queue, so broadcasts go out in the order
+  // the reads happened and the last one always carries the newest state.
+  pushBeers(tastingId: number): Promise<void> {
+    return this.enqueue(async () =>
+      this.broadcast({ type: "beers", beers: await listBeers(this.env.DB, tastingId, false) }),
+    );
+  }
+
+  pushParticipants(tastingId: number): Promise<void> {
+    return this.enqueue(async () =>
+      this.broadcast({ type: "participants", participants: await listParticipants(this.env.DB, tastingId, false) }),
+    );
+  }
+
+  pushTasting(tastingId: number): Promise<void> {
+    return this.enqueue(async () => {
+      const tasting = await getTastingById(this.env.DB, tastingId);
+      if (tasting) await this.broadcast({ type: "tasting", tasting });
     });
   }
 

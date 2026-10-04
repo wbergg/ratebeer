@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { Role, ServerMessage } from "../../shared/types";
+import type { Role } from "../../shared/types";
 import { isAdmin } from "../../shared/authz";
 import { getTastingById, listBeers, listParticipants, listTastings } from "../db";
 import type { AppEnv, Env } from "../env";
@@ -15,12 +15,10 @@ const ID = "{[0-9]{1,9}}";
 const isId = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0;
 
 const room = (env: Env, tastingId: number) => env.ROOM.get(env.ROOM.idFromName(String(tastingId)));
-const broadcast = (env: Env, tastingId: number, msg: ServerMessage) => room(env, tastingId).broadcast(msg);
-
-const pushBeers = async (env: Env, tastingId: number) =>
-  broadcast(env, tastingId, { type: "beers", beers: await listBeers(env.DB, tastingId, false) });
-const pushParticipants = async (env: Env, tastingId: number) =>
-  broadcast(env, tastingId, { type: "participants", participants: await listParticipants(env.DB, tastingId, false) });
+// List/tasting broadcasts run in the room's queue so they can't arrive out of order.
+const pushBeers = (env: Env, tastingId: number) => room(env, tastingId).pushBeers(tastingId);
+const pushParticipants = (env: Env, tastingId: number) => room(env, tastingId).pushParticipants(tastingId);
+const pushTasting = (env: Env, tastingId: number) => room(env, tastingId).pushTasting(tastingId);
 
 const str = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 const numOrNull = (v: unknown) => (v === null || v === undefined || v === "" ? null : Number(v));
@@ -147,8 +145,7 @@ admin.patch(`/tastings/:id${ID}`, async (c) => {
   const name = str(b.name, 100);
   if (!name) return c.json({ error: "Name is required" }, 400);
   await c.env.DB.prepare("UPDATE tastings SET name = ? WHERE id = ?").bind(name, id).run();
-  const t = await getTastingById(c.env.DB, id);
-  if (t) await broadcast(c.env, id, { type: "tasting", tasting: t });
+  await pushTasting(c.env, id);
   return c.json({ ok: true });
 });
 
@@ -167,10 +164,7 @@ admin.post(`/tastings/:id${ID}/activate`, async (c) => {
     await c.env.DB.prepare("UPDATE tastings SET is_active = 0 WHERE id = ?").bind(id).run();
   }
   const affected = new Set([id, prev?.id].filter((x): x is number => x !== undefined));
-  for (const tid of affected) {
-    const t = await getTastingById(c.env.DB, tid);
-    if (t) await broadcast(c.env, tid, { type: "tasting", tasting: t });
-  }
+  await Promise.all([...affected].map((tid) => pushTasting(c.env, tid)));
   return c.json({ ok: true });
 });
 
@@ -293,11 +287,10 @@ admin.put(`/tastings/:id${ID}/beers/order`, async (c) => {
 
 admin.delete(`/events/:id${ID}`, async (c) => {
   const id = Number(c.req.param("id"));
-  const ev = await c.env.DB.prepare("DELETE FROM events WHERE id = ? RETURNING tasting_id")
-    .bind(id)
-    .first<{ tasting_id: number }>();
-  if (!ev) return c.json({ error: "Not found" }, 404);
-  await broadcast(c.env, ev.tasting_id, { type: "eventRemoved", id });
+  const ev = await c.env.DB.prepare("SELECT tasting_id FROM events WHERE id = ?").bind(id).first<{ tasting_id: number }>();
+  if (!ev || !(await room(c.env, ev.tasting_id).deleteEvent(ev.tasting_id, id))) {
+    return c.json({ error: "Not found" }, 404);
+  }
   return c.json({ ok: true });
 });
 
@@ -312,7 +305,7 @@ admin.post(`/events/:id${ID}/force`, async (c) => {
     beerId: ev.beer_id,
     userId: ev.user_id,
   });
-  return c.json({ ok: true, removedEvents: removed.length });
+  return c.json({ ok: true, removedEvents: removed!.length });
 });
 
 // ---- permanent deletion of soft-removed beers / participants ----
@@ -326,6 +319,7 @@ admin.delete(`/tastings/:id${ID}/beers/:beerId${ID}`, async (c) => {
   if (!beer) return c.json({ error: "Not found" }, 404);
   if (!beer.hidden_at) return c.json({ error: "Remove the beer first, then delete it permanently" }, 409);
   const removed = await room(c.env, tastingId).purge({ tastingId, beerId, userId: null, deleteBeer: true });
+  if (!removed) return c.json({ error: "The beer was restored meanwhile; nothing was deleted" }, 409);
   return c.json({ ok: true, removedEvents: removed.length });
 });
 
@@ -338,5 +332,6 @@ admin.delete(`/tastings/:id${ID}/participants/:userId${ID}`, async (c) => {
   if (!part) return c.json({ error: "Not found" }, 404);
   if (!part.hidden_at) return c.json({ error: "Remove the participant first, then delete permanently" }, 409);
   const removed = await room(c.env, tastingId).purge({ tastingId, beerId: null, userId, deleteParticipant: true });
+  if (!removed) return c.json({ error: "The participant was restored meanwhile; nothing was deleted" }, 409);
   return c.json({ ok: true, removedEvents: removed.length });
 });

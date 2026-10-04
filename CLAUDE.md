@@ -36,7 +36,7 @@ npx wrangler d1 migrations apply ratebeer --local|--remote
     - "X removed rating of B (was 8)"
     - "X updated comment on B: "…""
   - The log shows the newest 50 plus "Load more", in local time.
-  - Admins can delete log lines (× on a line, click twice to confirm) via `DELETE /api/admin/events/:id`, which broadcasts `eventRemoved`. This removes only the log line, not the rating.
+  - Admins can delete log lines (× on a line, click twice to confirm) via `DELETE /api/admin/events/:id`, which runs through the DO queue (`deleteEvent`) and broadcasts `eventRemoved`. This removes only the log line, not the rating.
   - **Force** on a log line (`POST /api/admin/events/:id/force`) runs through the DO queue (`purge`). It deletes that user+beer rating and **all** its log lines, as if the beer was never rated, and broadcasts `purged`.
 - **Leaderboard:** beers with ≥1 vote, sorted by avg desc, then votes desc, then name. Identical (avg, votes) share a rank and medal. Ranks 1/2/3 are gold/silver/bronze.
 - **Consumed board** (below the leaderboard): participants ranked by the number of visible beers they have rated ("consumed").
@@ -45,6 +45,7 @@ npx wrangler d1 migrations apply ratebeer --local|--remote
 - **Soft delete:** beers and roster entries get `hidden_at` and can be restored.
   - Once removed, they can be **deleted permanently** via `DELETE /api/admin/tastings/:id/beers/:beerId` or `/participants/:userId`.
   - Permanent deletion is allowed only when `hidden_at` is set (otherwise 409). It also deletes their ratings and events in that tasting.
+  - The `hidden_at IS NOT NULL` guard is inside every statement of the `purge()` batch, so a concurrent restore makes the whole delete a no-op (409) rather than wiping ratings of a restored row.
 - **Tastings** can be force-deleted, even the active one, via `DELETE /api/admin/tastings/:id`.
   - DO `deleteTasting` deletes events, ratings, beers, roster and the tasting itself. Users are kept.
   - It then broadcasts `tastingDeleted` (clients navigate to `/`) and closes the sockets.
@@ -59,8 +60,8 @@ npx wrangler d1 migrations apply ratebeer --local|--remote
 - **Rating writes:** Worker checks authz → DO `applyRating()` (RPC) → D1 batch (upsert/delete rating + insert event `RETURNING`) → broadcast.
   - The DO keeps an explicit promise queue, because D1 awaits are not covered by DO input gates. Without the queue, concurrent writes would break the old→new chain.
 - **Realtime:** one DO per tasting (`idFromName(String(tastingId))`) using hibernatable WebSockets. `"ping"`→`"pong"` is auto-answered.
-  - Message types: `rating`, `beers`, `participants`, `tasting`, `eventRemoved`, `purged`, `tastingDeleted`. All hard deletes of ratings/events go through DO `purge()` so they serialise with rating writes.
-  - Admin mutations call `broadcast()` with full lists.
+  - Message types: `rating`, `beers`, `participants`, `tasting`, `eventRemoved`, `purged`, `tastingDeleted`. All hard deletes of ratings/events go through the DO queue (`purge()`, `deleteEvent()`) so they serialise with rating writes.
+  - Admin mutations write D1, then call DO `pushBeers()` / `pushParticipants()` / `pushTasting()`. These re-read and broadcast the full list inside the queue, so broadcasts can't arrive out of order.
   - The client refetches the snapshot on reconnect, and when a tasting's active flag changes.
 - **Auth:** the Worker runs its own Google OIDC code flow with PKCE, state and nonce (`src/worker/auth.ts`).
   - `id_token` claims are validated without a signature check, because the token comes straight from Google's token endpoint.
